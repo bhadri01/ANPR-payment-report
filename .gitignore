@@ -1,0 +1,5 @@
+.venv
+ANPR
+build
+dist
+anpr_tool*
