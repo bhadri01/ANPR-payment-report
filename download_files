@@ -1,0 +1,111 @@
+import requests
+import json
+from datetime import datetime, timedelta
+import concurrent.futures
+import os
+
+# Define the URL and cookie
+url = "https://echallan.parivahan.gov.in/dashboard/download-challans-report"
+session_cookie = "8o34srdj4h6b6n25ccq6fha5b0"  # Update this session if it expires
+cookies = {'PHPSESSID': session_cookie}
+
+# Define the folder to store downloaded files
+download_folder = "anpr"
+
+# Create the download folder if it doesn't exist
+if not os.path.exists(download_folder):
+    os.makedirs(download_folder)
+
+# Function to generate the monthly date range for filtersData
+def generate_date_range(start_date):
+    end_date = start_date + timedelta(days=30)  # Assuming each report covers roughly a month
+    return {
+        "date_range": {
+            "start_date": start_date.strftime("%Y/%m/%d 00:00"),
+            "end_date": end_date.strftime("%Y/%m/%d 23:59")
+        }
+    }
+
+# Function to download report for a given month
+def download_report_for_month(start_date):
+    filters_data = generate_date_range(start_date)
+    payload = {
+        'filtersData': json.dumps(filters_data)
+    }
+    report_filename = os.path.join(download_folder, f"challan_report_{start_date.strftime('%Y_%m')}.csv")
+
+    # Check if file already exists
+    if os.path.exists(report_filename):
+        print(f"Report for {start_date.strftime('%Y-%m')} already exists. Skipping download.")
+        return True  # File exists, no need to download again
+    
+    try:
+        response = requests.post(url, data=payload, cookies=cookies)
+
+        # Check if the response is a successful download
+        if response.status_code == 200:
+            # Save the report as a CSV file in the anpr folder
+            with open(report_filename, 'wb') as file:
+                file.write(response.content)
+            print(f"Report saved: {report_filename}")
+            return True  # Success
+        else:
+            print(f"Failed to download the report for {start_date.strftime('%Y-%m')}: Status code {response.status_code}")
+            return False  # Failed download
+    except Exception as e:
+        print(f"Error occurred for {start_date.strftime('%Y-%m')}: {e}")
+        return False  # Failed due to exception
+
+# Function to download all reports and retry failed ones
+def download_reports_with_retries(start_year, start_month):
+    current_date = datetime.now()
+    start_date = datetime(start_year, start_month, 1)
+    date_list = []
+
+    # Prepare a list of all the months we want to download
+    while start_date < current_date.replace(day=1):
+        date_list.append(start_date)
+        # Move to the next month
+        start_date = (start_date.replace(day=28) + timedelta(days=4)).replace(day=1)
+
+    # Using ThreadPoolExecutor to download multiple reports in parallel
+    max_workers = os.cpu_count()  # Use all available CPU cores
+    print(f"Using {max_workers} threads for parallel downloading")
+
+    failed_downloads = []
+
+    # Download all reports for the date range
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        results = list(executor.map(download_report_for_month, date_list))
+
+    # Collect failed downloads
+    for i, result in enumerate(results):
+        if not result:
+            failed_downloads.append(date_list[i])
+
+    # Retry downloading failed reports until all succeed
+    retry_attempt = 1
+    while failed_downloads:
+        print(f"Retrying failed downloads (Attempt {retry_attempt})...")
+        new_failed_downloads = []
+
+        # Retry failed downloads
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            results = list(executor.map(download_report_for_month, failed_downloads))
+
+        # Collect any downloads that still failed
+        for i, result in enumerate(results):
+            if not result:
+                new_failed_downloads.append(failed_downloads[i])
+
+        failed_downloads = new_failed_downloads
+        retry_attempt += 1
+
+    if not failed_downloads:
+        print("All reports have been successfully downloaded.")
+    else:
+        print(f"Some reports still failed after multiple attempts: {[date.strftime('%Y-%m') for date in failed_downloads]}")
+
+# Call the function to start downloading from December 2020
+if __name__ == "__main__":
+    download_reports_with_retries(2020, 12)
